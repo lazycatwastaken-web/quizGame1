@@ -9,7 +9,9 @@ local TweenService = game:GetService("TweenService")
 local localPlayer = Players.LocalPlayer
 local panelsFolder = workspace:WaitForChild("MemeTestPanels")
 local correctImages = require(ReplicatedStorage:WaitForChild("ImgsCorrect"))
+local incorrectImages = require(ReplicatedStorage:WaitForChild("ImgsIncorrect"))
 local correctStageImageEvent = ReplicatedStorage:WaitForChild("CorrectStageImageEvent")
+local incorrectStageImageEvent = ReplicatedStorage:WaitForChild("IncorrectStageImageEvent")
 local soundsFolder = SoundService:WaitForChild("MemeSounds")
 local rng = Random.new()
 local correctImageToken = 0
@@ -19,6 +21,7 @@ local correctImageFadeTween = nil
 local CORRECT_IMAGE_DISPLAY_SECONDS = 2.5
 local STAGE_SOUNDS_FOLDER_NAME = "StageSounds"
 local CORRECT_STAGE_SOUNDS_FOLDER_NAME = "Correct"
+local INCORRECT_STAGE_SOUNDS_FOLDER_NAME = "Incorrect"
 
 -- Connection tracking prevents duplicate prompt listeners as objects replicate in.
 local connectedPrompts = {}
@@ -52,6 +55,7 @@ local function getCorrectImageLabel()
 		warn("ScreenGui was not found in PlayerGui, so the correct-answer image cannot be displayed.")
 		return nil
 	end
+	screenGui.ResetOnSpawn = false
 
 	local imageLabel = screenGui:WaitForChild("ImgForCorrect", 10)
 	if not imageLabel or not (imageLabel:IsA("ImageLabel") or imageLabel:IsA("ImageButton")) then
@@ -73,13 +77,13 @@ local function configureCorrectImageOverlay(imageLabel)
 	imageLabel.ZIndex = 100
 end
 
--- Picks one random image entry from ReplicatedStorage.ImgsCorrect.
-local function getRandomCorrectImageId()
-	if #correctImages == 0 then
+-- Picks one random image entry from a ReplicatedStorage image module.
+local function getRandomImageId(images)
+	if #images == 0 then
 		return ""
 	end
 
-	local selectedImage = correctImages[rng:NextInteger(1, #correctImages)]
+	local selectedImage = images[rng:NextInteger(1, #images)]
 	local assetId = selectedImage
 	if type(selectedImage) == "table" then
 		assetId = selectedImage.id
@@ -88,48 +92,48 @@ local function getRandomCorrectImageId()
 	return toImageContent(assetId)
 end
 
--- Finds the pool of correct-stage sounds stored under SoundService.StageSounds.Correct.
-local function getCorrectStageSoundsFolder()
+-- Finds one feedback sound pool under SoundService.StageSounds.
+local function getStageSoundsFolder(folderName)
 	local stageSounds = SoundService:FindFirstChild(STAGE_SOUNDS_FOLDER_NAME)
 	if not stageSounds then
-		warn("SoundService.StageSounds was not found, so the correct-stage sound cannot be played.")
+		warn("SoundService.StageSounds was not found, so the stage feedback sound cannot be played.")
 		return nil
 	end
 
-	local correctSounds = stageSounds:FindFirstChild(CORRECT_STAGE_SOUNDS_FOLDER_NAME)
-	if not correctSounds then
-		warn("SoundService.StageSounds.Correct was not found, so the correct-stage sound cannot be played.")
+	local feedbackSounds = stageSounds:FindFirstChild(folderName)
+	if not feedbackSounds then
+		warn(string.format("SoundService.StageSounds.%s was not found, so the stage feedback sound cannot be played.", folderName))
 		return nil
 	end
 
-	return correctSounds
+	return feedbackSounds
 end
 
--- Picks one playable Sound from the correct-stage sound folder.
-local function getRandomCorrectStageSound()
-	local correctSounds = getCorrectStageSoundsFolder()
-	if not correctSounds then
+-- Picks one playable Sound from a stage feedback sound folder.
+local function getRandomStageSound(folderName)
+	local feedbackSounds = getStageSoundsFolder(folderName)
+	if not feedbackSounds then
 		return nil
 	end
 
 	local sounds = {}
-	for _, child in ipairs(correctSounds:GetChildren()) do
+	for _, child in ipairs(feedbackSounds:GetChildren()) do
 		if child:IsA("Sound") and child.SoundId ~= "" then
 			table.insert(sounds, child)
 		end
 	end
 
 	if #sounds == 0 then
-		warn("SoundService.StageSounds.Correct does not contain any Sounds with SoundId set.")
+		warn(string.format("SoundService.StageSounds.%s does not contain any Sounds with SoundId set.", folderName))
 		return nil
 	end
 
 	return sounds[rng:NextInteger(1, #sounds)]
 end
 
--- Plays one correct-stage sound locally when the player advances.
-local function playRandomCorrectStageSound()
-	local sound = getRandomCorrectStageSound()
+-- Plays one stage feedback sound locally.
+local function playRandomStageSound(folderName)
+	local sound = getRandomStageSound(folderName)
 	if not sound then
 		return
 	end
@@ -139,9 +143,9 @@ local function playRandomCorrectStageSound()
 	sound:Play()
 end
 
--- Shows a random correct-answer image briefly when the server confirms stage progress.
-local function showRandomCorrectImage()
-	local imageId = getRandomCorrectImageId()
+-- Shows a random stage feedback image and fades it over the display window.
+local function showRandomStageImage(images)
+	local imageId = getRandomImageId(images)
 	if imageId == "" then
 		return
 	end
@@ -180,8 +184,13 @@ local function showRandomCorrectImage()
 end
 
 correctStageImageEvent.OnClientEvent:Connect(function()
-	showRandomCorrectImage()
-	playRandomCorrectStageSound()
+	showRandomStageImage(correctImages)
+	playRandomStageSound(CORRECT_STAGE_SOUNDS_FOLDER_NAME)
+end)
+
+incorrectStageImageEvent.OnClientEvent:Connect(function()
+	showRandomStageImage(incorrectImages)
+	playRandomStageSound(INCORRECT_STAGE_SOUNDS_FOLDER_NAME)
 end)
 
 local function stopMemeSounds()

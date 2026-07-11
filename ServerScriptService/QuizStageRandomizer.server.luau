@@ -23,6 +23,7 @@ local STAGE_SPAWN_SIZE = Vector3.new(6, 1, 6)
 local STAGE_SPAWN_X_OFFSET_FROM_BUTTON = 12
 local CHARACTER_SPAWN_HEIGHT_OFFSET = 4
 local CORRECT_STAGE_IMAGE_EVENT_NAME = "CorrectStageImageEvent"
+local INCORRECT_STAGE_IMAGE_EVENT_NAME = "IncorrectStageImageEvent"
 --local DECAL_ROTATIONS = { 0, 90, 180, 270 }
 
 local rng = Random.new(os.time() + math.floor(os.clock() * 1000000))
@@ -43,6 +44,7 @@ local function getOrCreateRemoteEvent(eventName)
 end
 
 local correctStageImageEvent = getOrCreateRemoteEvent(CORRECT_STAGE_IMAGE_EVENT_NAME)
+local incorrectStageImageEvent = getOrCreateRemoteEvent(INCORRECT_STAGE_IMAGE_EVENT_NAME)
 local playerStageTouchLocks = {}
 
 -- Builds the leaderboard Stage stat that tracks a player's current quiz stage for this server session.
@@ -503,6 +505,7 @@ local function resolvePlayerStageTouch(player, panel, humanoid)
 
 	if panel:GetAttribute("IsKillbrick") == true then
 		if humanoid and humanoid.Health > 0 then
+			incorrectStageImageEvent:FireClient(player, stageNumber)
 			humanoid.Health = 0
 		end
 	else

@@ -12,6 +12,8 @@ local STAGE_NAME_PATTERN = "^Frame(%d+)$"
 local BUTTON_NAME_PATTERN = "Button%d"
 local PANEL_NAME_PATTERN = "BlackPanel%d"
 local MEME_DECAL_NAME = "MemeDecal"
+
+-- Player progress, stage spawn, and client feedback settings.
 local LEADERSTATS_NAME = "leaderstats"
 local STAGE_STAT_NAME = "Stage"
 local STARTING_STAGE = 1
@@ -20,14 +22,30 @@ local STAGE_SPAWN_NAME_PATTERN = "StageSpawn%d"
 local STAGE_SPAWN_SIZE = Vector3.new(6, 1, 6)
 local STAGE_SPAWN_X_OFFSET_FROM_BUTTON = 12
 local CHARACTER_SPAWN_HEIGHT_OFFSET = 4
+local CORRECT_STAGE_IMAGE_EVENT_NAME = "CorrectStageImageEvent"
 --local DECAL_ROTATIONS = { 0, 90, 180, 270 }
 
 local rng = Random.new(os.time() + math.floor(os.clock() * 1000000))
 local killbrickConnections = {}
 local stageSpawns = {}
 local playerConnections = {}
+
+-- Creates shared server-to-client events on demand so clients can react to stage progress.
+local function getOrCreateRemoteEvent(eventName)
+	local event = ReplicatedStorage:FindFirstChild(eventName)
+	if not event then
+		event = Instance.new("RemoteEvent")
+		event.Name = eventName
+		event.Parent = ReplicatedStorage
+	end
+
+	return event
+end
+
+local correctStageImageEvent = getOrCreateRemoteEvent(CORRECT_STAGE_IMAGE_EVENT_NAME)
 local playerStageTouchLocks = {}
 
+-- Builds the leaderboard Stage stat that tracks a player's current quiz stage for this server session.
 local function getOrCreateStageStat(player)
 	local leaderstats = player:FindFirstChild(LEADERSTATS_NAME)
 	if not leaderstats then
@@ -47,10 +65,12 @@ local function getOrCreateStageStat(player)
 	return stageStat
 end
 
+-- Looks up the invisible spawn pad assigned to a numbered quiz stage.
 local function getStageSpawn(stageNumber)
 	return stageSpawns[stageNumber]
 end
 
+-- Points Roblox's normal respawn system at the spawn pad for the player's current Stage value.
 local function updatePlayerRespawnLocation(player)
 	local stageStat = getOrCreateStageStat(player)
 	local stageSpawn = getStageSpawn(stageStat.Value)
@@ -62,6 +82,7 @@ local function updatePlayerRespawnLocation(player)
 	end
 end
 
+-- Moves a newly spawned character onto the correct stage pad as a backup to RespawnLocation.
 local function spawnCharacterAtPlayerStage(player, character)
 	playerStageTouchLocks[player] = {}
 	updatePlayerRespawnLocation(player)
@@ -80,6 +101,7 @@ local function spawnCharacterAtPlayerStage(player, character)
 	character:PivotTo(stageSpawn.CFrame + Vector3.new(0, CHARACTER_SPAWN_HEIGHT_OFFSET, 0))
 end
 
+-- Initializes progress stats and keeps respawn placement synced as the player's Stage changes.
 local function setupPlayerStats(player)
 	local stageStat = getOrCreateStageStat(player)
 	updatePlayerRespawnLocation(player)
@@ -102,6 +124,7 @@ local function setupPlayerStats(player)
 	end
 end
 
+-- Clears per-player event connections and touch locks when a player leaves the server.
 local function cleanupPlayerConnections(player)
 	local connections = playerConnections[player]
 	if not connections then
@@ -138,6 +161,7 @@ local function getMemeKey(meme)
 	return meme.index or meme.sourcePanelName
 end
 
+-- Draws memes from a shuffled bag so stages get varied answers before repeats are reused.
 local function createMemeDrawBag(memePool)
 	local remainingMemes = {}
 
@@ -180,6 +204,7 @@ local function createMemeDrawBag(memePool)
 	}
 end
 
+-- Selects three unique meme choices for a single stage from the shuffled draw bag.
 local function drawStageMemes(memeDrawBag)
 	local stageMemes = {}
 	local selectedKeys = {}
@@ -278,6 +303,7 @@ local function getStages()
 	return stages
 end
 
+-- Keeps all generated spawn pads together under Workspace.StageSpawns.
 local function getOrCreateStageSpawnsFolder()
 	local folder = Workspace:FindFirstChild(STAGE_SPAWNS_FOLDER_NAME)
 	if not folder then
@@ -289,6 +315,7 @@ local function getOrCreateStageSpawnsFolder()
 	return folder
 end
 
+-- Reuses an existing StageSpawn# when present, whether it was generated or placed manually.
 local function findStageSpawn(stage, spawnsFolder)
 	local spawnName = string.format(STAGE_SPAWN_NAME_PATTERN, stage.number)
 	local existingSpawn = spawnsFolder:FindFirstChild(spawnName)
@@ -309,10 +336,12 @@ local function findStageSpawn(stage, spawnsFolder)
 	return nil
 end
 
+-- Finds the Button# model/part that marks where a stage's prompt area begins.
 local function getButtonForStage(stageNumber)
 	return Workspace:FindFirstChild(string.format(BUTTON_NAME_PATTERN, stageNumber))
 end
 
+-- Resolves the button's world position from either the button part, Press part, or model pivot.
 local function getButtonCFrame(button)
 	if button:IsA("BasePart") then
 		return button.CFrame
@@ -330,6 +359,7 @@ local function getButtonCFrame(button)
 	return nil
 end
 
+-- Drops the spawn pad onto the nearest surface under the desired X-offset position.
 local function raycastStageSpawnHeight(position, ignoredInstances)
 	local raycastParams = RaycastParams.new()
 	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -344,6 +374,7 @@ local function raycastStageSpawnHeight(position, ignoredInstances)
 	return position.Y
 end
 
+-- Calculates a spawn pad CFrame at a fair X-axis distance before the stage button.
 local function getStageSpawnCFrame(stage, spawnsFolder)
 	local button = getButtonForStage(stage.number)
 	if not button then
@@ -369,6 +400,7 @@ local function getStageSpawnCFrame(stage, spawnsFolder)
 	return CFrame.lookAt(spawnPosition, Vector3.new(buttonPosition.X, spawnPosition.Y, buttonPosition.Z))
 end
 
+-- Creates or updates one invisible, non-colliding SpawnLocation for a stage.
 local function configureStageSpawn(stage, spawnsFolder)
 	local stageSpawn = findStageSpawn(stage, spawnsFolder)
 	local spawnCFrame = getStageSpawnCFrame(stage, spawnsFolder)
@@ -396,6 +428,7 @@ local function configureStageSpawn(stage, spawnsFolder)
 	return stageSpawn
 end
 
+-- Builds the full StageSpawn# lookup table used by player respawns.
 local function configureStageSpawns(stages)
 	local spawnsFolder = getOrCreateStageSpawnsFolder()
 	for _, stage in ipairs(stages) do
@@ -430,6 +463,7 @@ local function getPlayerFromHit(hit)
 	return Players:GetPlayerFromCharacter(character)
 end
 
+-- Advances the player's Stage only when they touch the correct panel for their current stage.
 local function advancePlayerStageFromPanel(player, panel)
 	local stageNumber = panel:GetAttribute("QuizStageNumber")
 	if typeof(stageNumber) ~= "number" then
@@ -440,9 +474,11 @@ local function advancePlayerStageFromPanel(player, panel)
 	if stageStat.Value == stageNumber then
 		stageStat.Value += 1
 		updatePlayerRespawnLocation(player)
+		correctStageImageEvent:FireClient(player, stageStat.Value)
 	end
 end
 
+-- Handles a panel touch once per stage so repeated body-part touches do not duplicate progress or deaths.
 local function resolvePlayerStageTouch(player, panel, humanoid)
 	local stageNumber = panel:GetAttribute("QuizStageNumber")
 	if typeof(stageNumber) ~= "number" then

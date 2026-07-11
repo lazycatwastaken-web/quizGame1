@@ -159,6 +159,9 @@ local function configureSound(soundsFolder, index, meme, soundName, soundId)
 	end
 
 	sound.SoundId = soundId
+	if typeof(meme.volume) == "number" then
+		sound.Volume = meme.volume
+	end
 	sound:SetAttribute("MemeIndex", index)
 	sound:SetAttribute("MemeName", meme.name or "")
 	return sound

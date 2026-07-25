@@ -16,6 +16,7 @@ local MEME_DECAL_NAME = "MemeDecal"
 -- Player progress, stage spawn, and client feedback settings.
 local LEADERSTATS_NAME = "leaderstats"
 local STAGE_STAT_NAME = "Stage"
+local HIGHEST_STAGE_STAT_NAME = "HighestStage"
 local STARTING_STAGE = 1
 local STAGE_SPAWNS_FOLDER_NAME = "StageSpawns"
 local STAGE_SPAWN_NAME_PATTERN = "StageSpawn%d"
@@ -24,12 +25,15 @@ local STAGE_SPAWN_X_OFFSET_FROM_BUTTON = 12
 local CHARACTER_SPAWN_HEIGHT_OFFSET = 4
 local CORRECT_STAGE_IMAGE_EVENT_NAME = "CorrectStageImageEvent"
 local INCORRECT_STAGE_IMAGE_EVENT_NAME = "IncorrectStageImageEvent"
+local STAGE_NAVIGATION_EVENT_NAME = "StageNavigationEvent"
+local STAGE_NAVIGATION_COOLDOWN_SECONDS = 0.15
 --local DECAL_ROTATIONS = { 0, 90, 180, 270 }
 
 local rng = Random.new(os.time() + math.floor(os.clock() * 1000000))
 local killbrickConnections = {}
 local stageSpawns = {}
 local playerConnections = {}
+local lastStageNavigationTimes = {}
 
 -- Creates shared server-to-client events on demand so clients can react to stage progress.
 local function getOrCreateRemoteEvent(eventName)
@@ -45,6 +49,7 @@ end
 
 local correctStageImageEvent = getOrCreateRemoteEvent(CORRECT_STAGE_IMAGE_EVENT_NAME)
 local incorrectStageImageEvent = getOrCreateRemoteEvent(INCORRECT_STAGE_IMAGE_EVENT_NAME)
+local stageNavigationEvent = getOrCreateRemoteEvent(STAGE_NAVIGATION_EVENT_NAME)
 local playerStageTouchLocks = {}
 
 -- Builds the leaderboard Stage stat that tracks a player's current quiz stage for this server session.
@@ -65,6 +70,25 @@ local function getOrCreateStageStat(player)
 	end
 
 	return stageStat
+end
+
+-- Builds the leaderboard stat that records the furthest stage a player has unlocked.
+local function getOrCreateHighestStageStat(player)
+	local stageStat = getOrCreateStageStat(player)
+	local leaderstats = stageStat.Parent
+	local highestStageStat = leaderstats:FindFirstChild(HIGHEST_STAGE_STAT_NAME)
+	if not highestStageStat then
+		highestStageStat = Instance.new("IntValue")
+		highestStageStat.Name = HIGHEST_STAGE_STAT_NAME
+		highestStageStat.Value = math.max(STARTING_STAGE, stageStat.Value)
+		highestStageStat.Parent = leaderstats
+	end
+
+	if stageStat.Value > highestStageStat.Value then
+		highestStageStat.Value = stageStat.Value
+	end
+
+	return highestStageStat
 end
 
 -- Looks up the invisible spawn pad assigned to a numbered quiz stage.
@@ -106,12 +130,16 @@ end
 -- Initializes progress stats and keeps respawn placement synced as the player's Stage changes.
 local function setupPlayerStats(player)
 	local stageStat = getOrCreateStageStat(player)
+	local highestStageStat = getOrCreateHighestStageStat(player)
 	updatePlayerRespawnLocation(player)
 
 	if not playerConnections[player] then
 		playerConnections[player] = {
 			stageStat:GetPropertyChangedSignal("Value"):Connect(function()
 				playerStageTouchLocks[player] = {}
+				if stageStat.Value > highestStageStat.Value then
+					highestStageStat.Value = stageStat.Value
+				end
 				updatePlayerRespawnLocation(player)
 			end),
 
@@ -138,6 +166,7 @@ local function cleanupPlayerConnections(player)
 	end
 	playerConnections[player] = nil
 	playerStageTouchLocks[player] = nil
+	lastStageNavigationTimes[player] = nil
 end
 
 -- Copies a simple array so shuffling does not mutate the original source list.
@@ -438,6 +467,40 @@ local function configureStageSpawns(stages)
 	end
 end
 
+-- Validates a GUI navigation request, updates Stage on the server, and teleports immediately.
+local function navigatePlayerByStageDelta(player, stageDelta)
+	if typeof(stageDelta) ~= "number" or stageDelta % 1 ~= 0 or math.abs(stageDelta) ~= 1 then
+		return
+	end
+
+	local stageStat = getOrCreateStageStat(player)
+	local highestStageStat = getOrCreateHighestStageStat(player)
+	local targetStage = stageStat.Value + stageDelta
+	if targetStage > highestStageStat.Value then
+		return
+	end
+
+	local targetSpawn = getStageSpawn(targetStage)
+	if not targetSpawn then
+		return
+	end
+
+	local now = os.clock()
+	local lastNavigationTime = lastStageNavigationTimes[player]
+	if lastNavigationTime and now - lastNavigationTime < STAGE_NAVIGATION_COOLDOWN_SECONDS then
+		return
+	end
+	lastStageNavigationTimes[player] = now
+
+	stageStat.Value = targetStage
+	updatePlayerRespawnLocation(player)
+
+	local character = player.Character
+	if character and character.Parent then
+		character:PivotTo(targetSpawn.CFrame + Vector3.new(0, CHARACTER_SPAWN_HEIGHT_OFFSET, 0))
+	end
+end
+
 -- Removes old decals before a new meme image is applied to an answer panel.
 local function clearPanelDecals(panel)
 	for _, child in ipairs(panel:GetChildren()) do
@@ -474,7 +537,12 @@ local function advancePlayerStageFromPanel(player, panel)
 
 	local stageStat = getOrCreateStageStat(player)
 	if stageStat.Value == stageNumber then
-		stageStat.Value += 1
+		local nextStage = stageStat.Value + 1
+		local highestStageStat = getOrCreateHighestStageStat(player)
+		if nextStage > highestStageStat.Value then
+			highestStageStat.Value = nextStage
+		end
+		stageStat.Value = nextStage
 		updatePlayerRespawnLocation(player)
 		correctStageImageEvent:FireClient(player, stageStat.Value)
 	end
@@ -627,6 +695,7 @@ for _, stage in ipairs(stages) do
 end
 
 configureStageSpawns(stages)
+stageNavigationEvent.OnServerEvent:Connect(navigatePlayerByStageDelta)
 
 for _, player in ipairs(Players:GetPlayers()) do
 	setupPlayerStats(player)

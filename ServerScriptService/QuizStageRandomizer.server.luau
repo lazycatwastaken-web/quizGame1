@@ -256,23 +256,86 @@ local function syncMemePoolFromCatalog()
 	print(string.format("QuizStageRandomizer synced %d meme panels from NewGenMemes.", syncedCount))
 end
 
--- Reads the generated meme panels and turns their decals/attributes into quiz options.
+-- Converts a catalog image id into the content URL used by Decal.Texture.
+local function normalizeAssetId(assetId)
+	if assetId == nil then
+		return ""
+	end
+
+	local digits = tostring(assetId):match("%d+")
+	if not digits then
+		return ""
+	end
+
+	return "rbxassetid://" .. digits
+end
+
+-- Uses the image asset as the stable identity shared by generated panels and catalog rows.
+-- Catalog volume is intentionally excluded because it only controls sound playback.
+local function getMemeIdentity(imageAssetId, fallbackName, fallbackSoundId)
+	local normalizedImageId = normalizeAssetId(imageAssetId)
+	if normalizedImageId ~= "" then
+		return normalizedImageId
+	end
+
+	return string.lower(tostring(fallbackName or "")) .. "|" .. normalizeAssetId(fallbackSoundId)
+end
+
+-- Combines Workspace panels with only the NewGenMemes entries not already represented there.
 local function getMemePool()
 	local memePoolFolder = Workspace:WaitForChild(MEME_POOL_FOLDER_NAME)
 	local memes = {}
+	local seenMemeIdentities = {}
 
 	for _, panel in ipairs(memePoolFolder:GetChildren()) do
 		if panel:IsA("BasePart") then
 			local decal = panel:FindFirstChild(MEME_DECAL_NAME)
 			if decal and decal:IsA("Decal") and decal.Texture ~= "" then
-				table.insert(memes, {
-					decal = decal,
-					index = panel:GetAttribute("MemeIndex"),
-					name = panel:GetAttribute("MemeName") or panel.Name,
-					soundName = panel:GetAttribute("MemeSoundName"),
-					sourcePanelName = panel.Name,
-				})
+				local memeIdentity = getMemeIdentity(
+					decal.Texture,
+					panel:GetAttribute("MemeName"),
+					panel:GetAttribute("MemeSoundName")
+				)
+				if not seenMemeIdentities[memeIdentity] then
+					seenMemeIdentities[memeIdentity] = true
+					table.insert(memes, {
+						decal = decal,
+						index = panel:GetAttribute("MemeIndex"),
+						name = panel:GetAttribute("MemeName") or panel.Name,
+						soundName = panel:GetAttribute("MemeSoundName"),
+						sourcePanelName = panel.Name,
+					})
+				end
 			end
+		end
+	end
+
+	local newGenMemes = require(ReplicatedStorage:WaitForChild("NewGenMemes"))
+	for index, catalogMeme in ipairs(newGenMemes) do
+		local texture = normalizeAssetId(catalogMeme.id)
+		local memeIdentity = getMemeIdentity(catalogMeme.id, catalogMeme.name, catalogMeme.sound)
+		if texture ~= "" and not seenMemeIdentities[memeIdentity] then
+			local syncedPanelName = string.format("MemePanel_%02d", index)
+			local syncedPanel = memePoolFolder:FindFirstChild(syncedPanelName)
+			local syncedDecal = syncedPanel and syncedPanel:FindFirstChild(MEME_DECAL_NAME)
+			local catalogDecal = syncedDecal
+
+			if not (catalogDecal and catalogDecal:IsA("Decal")) then
+				catalogDecal = Instance.new("Decal")
+				catalogDecal.Name = MEME_DECAL_NAME
+				catalogDecal.Face = Enum.NormalId.Right
+				catalogDecal.Texture = texture
+			end
+
+			seenMemeIdentities[memeIdentity] = true
+			-- catalogMeme.volume is deliberately ignored when constructing quiz records.
+			table.insert(memes, {
+				decal = catalogDecal,
+				index = index,
+				name = catalogMeme.name or string.format("Meme %d", index),
+				soundName = syncedPanel and syncedPanel:GetAttribute("MemeSoundName") or nil,
+				sourcePanelName = syncedPanelName,
+			})
 		end
 	end
 
@@ -285,7 +348,7 @@ local function getMemePool()
 		return leftIndex < rightIndex
 	end)
 
-	assert(#memes >= 3, "QuizStageRandomizer needs at least 3 meme panels in Workspace.MemeTestPanels")
+	assert(#memes >= 3, "QuizStageRandomizer needs at least 3 unique memes across Workspace.MemeTestPanels and ReplicatedStorage.NewGenMemes")
 	return memes
 end
 

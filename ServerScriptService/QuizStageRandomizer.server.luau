@@ -6,9 +6,10 @@ local Workspace = game:GetService("Workspace")
 -- Reuse the shared ReplicatedStorage sync so NewGenMemes stays the source of truth.
 local MemePanelSync = require(ReplicatedStorage:WaitForChild("MemePanelSync"))
 
--- Workspace naming conventions used to find stages, buttons, panels, and decals.
+-- Workspace naming conventions used to find Stage# containers and their nested frame/button models.
 local MEME_POOL_FOLDER_NAME = "MemeTestPanels"
-local STAGE_NAME_PATTERN = "^Frame(%d+)$"
+local STAGE_NAME_PATTERN = "^Stage(%d+)$"
+local FRAME_NAME_PATTERN = "Frame%d"
 local BUTTON_NAME_PATTERN = "Button%d"
 local PANEL_NAME_PATTERN = "BlackPanel%d"
 local MEME_DECAL_NAME = "MemeDecal"
@@ -22,7 +23,7 @@ local STAGE_SPAWNS_FOLDER_NAME = "StageSpawns"
 local STAGE_SPAWN_NAME_PATTERN = "StageSpawn%d"
 local STAGE_SPAWN_SIZE = Vector3.new(6, 1, 6)
 local STAGE_SPAWN_X_OFFSET_FROM_BUTTON = 12
-local CHARACTER_SPAWN_HEIGHT_OFFSET = 4
+local CHARACTER_SPAWN_HEIGHT_OFFSET = 0
 local CORRECT_STAGE_IMAGE_EVENT_NAME = "CorrectStageImageEvent"
 local INCORRECT_STAGE_IMAGE_EVENT_NAME = "IncorrectStageImageEvent"
 local STAGE_NAVIGATION_EVENT_NAME = "StageNavigationEvent"
@@ -307,22 +308,35 @@ local function getStagePanels(stage)
 	return panels
 end
 
--- Discovers valid Frame# stage models and keeps them ordered by stage number.
+-- Discovers valid Stage# containers and resolves each one's nested Frame# and Button# models.
 local function getStages()
 	local stages = {}
 
-	for _, child in ipairs(Workspace:GetChildren()) do
-		local stageNumber = tonumber(child.Name:match(STAGE_NAME_PATTERN))
-		if stageNumber and child:IsA("Model") then
-			local panels = getStagePanels(child)
-			if panels then
-				table.insert(stages, {
-					model = child,
-					number = stageNumber,
-					panels = panels,
-				})
+	for _, stageModel in ipairs(Workspace:GetChildren()) do
+		local stageNumber = tonumber(stageModel.Name:match(STAGE_NAME_PATTERN))
+		if stageNumber and stageModel:IsA("Model") then
+			local frameName = string.format(FRAME_NAME_PATTERN, stageNumber)
+			local buttonName = string.format(BUTTON_NAME_PATTERN, stageNumber)
+			local frame = stageModel:FindFirstChild(frameName)
+			local button = stageModel:FindFirstChild(buttonName)
+
+			if not (frame and frame:IsA("Model")) then
+				warn(string.format("%s was skipped because it does not contain %s", stageModel.Name, frameName))
+			elseif not button then
+				warn(string.format("%s was skipped because it does not contain %s", stageModel.Name, buttonName))
 			else
-				warn(string.format("%s was skipped because it does not have BlackPanel1, BlackPanel2, and BlackPanel3", child.Name))
+				local panels = getStagePanels(frame)
+				if panels then
+					table.insert(stages, {
+						model = stageModel,
+						frame = frame,
+						button = button,
+						number = stageNumber,
+						panels = panels,
+					})
+				else
+					warn(string.format("%s was skipped because %s does not have BlackPanel1, BlackPanel2, and BlackPanel3", stageModel.Name, frameName))
+				end
 			end
 		end
 	end
@@ -367,9 +381,9 @@ local function findStageSpawn(stage, spawnsFolder)
 	return nil
 end
 
--- Finds the Button# model/part that marks where a stage's prompt area begins.
-local function getButtonForStage(stageNumber)
-	return Workspace:FindFirstChild(string.format(BUTTON_NAME_PATTERN, stageNumber))
+-- Finds the nested Button# model/part that marks where a stage's prompt area begins.
+local function getButtonForStage(stage)
+	return stage.button or stage.model:FindFirstChild(string.format(BUTTON_NAME_PATTERN, stage.number))
 end
 
 -- Resolves the button's world position from either the button part, Press part, or model pivot.
@@ -407,7 +421,7 @@ end
 
 -- Calculates a spawn pad CFrame at a fair X-axis distance before the stage button.
 local function getStageSpawnCFrame(stage, spawnsFolder)
-	local button = getButtonForStage(stage.number)
+	local button = getButtonForStage(stage)
 	if not button then
 		warn(string.format("Stage %d does not have %s, so no spawn point was created.", stage.number, string.format(BUTTON_NAME_PATTERN, stage.number)))
 		return nil
@@ -625,38 +639,32 @@ local function applyMemeToPanel(panelInfo, meme, isCorrect, stageNumber)
 	setMemeAttributes(decal, meme, isCorrect, stageNumber, panelInfo.optionNumber)
 end
 
--- Writes the correct answer details onto the stage and its matching button model.
+-- Writes stage numbering and correct-answer details onto the Stage#, Frame#, Button#, and Press instances.
 local function setStageAttributes(stage, correctMeme, correctPanelInfo)
-	stage.model:SetAttribute("QuizStageNumber", stage.number)
-	stage.model:SetAttribute("CorrectMemeName", correctMeme.name)
-	stage.model:SetAttribute("CorrectMemeIndex", correctMeme.index)
-	stage.model:SetAttribute("CorrectMemeSoundName", correctMeme.soundName)
-	stage.model:SetAttribute("CorrectPanelName", correctPanelInfo.part.Name)
-	stage.model:SetAttribute("CorrectOptionNumber", correctPanelInfo.optionNumber)
-	stage.model:SetAttribute("CorrectSourceMemePanelName", correctMeme.sourcePanelName)
+	local function applyCorrectAnswerAttributes(instance)
+		instance:SetAttribute("Stage", stage.number)
+		instance:SetAttribute("QuizStageNumber", stage.number)
+		instance:SetAttribute("CorrectMemeName", correctMeme.name)
+		instance:SetAttribute("CorrectMemeIndex", correctMeme.index)
+		instance:SetAttribute("CorrectMemeSoundName", correctMeme.soundName)
+		instance:SetAttribute("CorrectPanelName", correctPanelInfo.part.Name)
+		instance:SetAttribute("CorrectOptionNumber", correctPanelInfo.optionNumber)
+		instance:SetAttribute("CorrectSourceMemePanelName", correctMeme.sourcePanelName)
+	end
 
-	local button = Workspace:FindFirstChild(string.format(BUTTON_NAME_PATTERN, stage.number))
+	applyCorrectAnswerAttributes(stage.model)
+	applyCorrectAnswerAttributes(stage.frame)
+
+	local button = getButtonForStage(stage)
 	if not button then
 		return
 	end
 
-	button:SetAttribute("QuizStageNumber", stage.number)
-	button:SetAttribute("CorrectMemeName", correctMeme.name)
-	button:SetAttribute("CorrectMemeIndex", correctMeme.index)
-	button:SetAttribute("CorrectMemeSoundName", correctMeme.soundName)
-	button:SetAttribute("CorrectPanelName", correctPanelInfo.part.Name)
-	button:SetAttribute("CorrectOptionNumber", correctPanelInfo.optionNumber)
-	button:SetAttribute("CorrectSourceMemePanelName", correctMeme.sourcePanelName)
+	applyCorrectAnswerAttributes(button)
 
 	local press = button:FindFirstChild("Press")
 	if press then
-		press:SetAttribute("QuizStageNumber", stage.number)
-		press:SetAttribute("CorrectMemeName", correctMeme.name)
-		press:SetAttribute("CorrectMemeIndex", correctMeme.index)
-		press:SetAttribute("CorrectMemeSoundName", correctMeme.soundName)
-		press:SetAttribute("CorrectPanelName", correctPanelInfo.part.Name)
-		press:SetAttribute("CorrectOptionNumber", correctPanelInfo.optionNumber)
-		press:SetAttribute("CorrectSourceMemePanelName", correctMeme.sourcePanelName)
+		applyCorrectAnswerAttributes(press)
 	end
 end
 

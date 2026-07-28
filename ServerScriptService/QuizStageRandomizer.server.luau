@@ -193,40 +193,33 @@ local function getMemeKey(meme)
 	return meme.index or meme.sourcePanelName
 end
 
--- Draws memes from a shuffled bag so stages get varied answers before repeats are reused.
-local function createMemeDrawBag(memePool)
+-- Draws correct answers from a shuffled bag so every meme is used once before a repeat.
+local function createCorrectAnswerDrawBag(memePool)
 	local remainingMemes = {}
+	local lastDrawnKey = nil
 
-	local function refill(excludedKeys)
-		local refillCandidates = {}
-		for _, meme in ipairs(memePool) do
-			if not excludedKeys or not excludedKeys[getMemeKey(meme)] then
-				table.insert(refillCandidates, meme)
+	local function refill()
+		remainingMemes = shuffle(memePool)
+
+		-- Avoid putting the previous cycle's last answer first in the new cycle.
+		if #remainingMemes > 1 and getMemeKey(remainingMemes[#remainingMemes]) == lastDrawnKey then
+			for index = 1, #remainingMemes - 1 do
+				if getMemeKey(remainingMemes[index]) ~= lastDrawnKey then
+					remainingMemes[index], remainingMemes[#remainingMemes] = remainingMemes[#remainingMemes], remainingMemes[index]
+					break
+				end
 			end
 		end
-
-		if #refillCandidates == 0 then
-			refillCandidates = copyArray(memePool)
-		end
-
-		remainingMemes = shuffle(refillCandidates)
 	end
 
-	local function draw(excludedKeys)
+	local function draw()
 		if #remainingMemes == 0 then
-			refill(excludedKeys)
+			refill()
 		end
 
-		for index = #remainingMemes, 1, -1 do
-			local meme = remainingMemes[index]
-			if not excludedKeys or not excludedKeys[getMemeKey(meme)] then
-				table.remove(remainingMemes, index)
-				return meme
-			end
-		end
-
-		refill(excludedKeys)
-		return table.remove(remainingMemes)
+		local meme = table.remove(remainingMemes)
+		lastDrawnKey = getMemeKey(meme)
+		return meme
 	end
 
 	refill()
@@ -236,18 +229,24 @@ local function createMemeDrawBag(memePool)
 	}
 end
 
--- Selects three unique meme choices for a single stage from the shuffled draw bag.
-local function drawStageMemes(memeDrawBag)
-	local stageMemes = {}
-	local selectedKeys = {}
+-- Selects one non-repeating correct answer and two unique decoys for a stage.
+local function drawStageMemes(memePool, correctAnswerDrawBag)
+	local correctMeme = correctAnswerDrawBag.draw()
+	local decoyCandidates = {}
+	local correctMemeKey = getMemeKey(correctMeme)
 
-	for _ = 1, 3 do
-		local meme = memeDrawBag.draw(selectedKeys)
-		table.insert(stageMemes, meme)
-		selectedKeys[getMemeKey(meme)] = true
+	for _, meme in ipairs(memePool) do
+		if getMemeKey(meme) ~= correctMemeKey then
+			table.insert(decoyCandidates, meme)
+		end
 	end
 
-	return stageMemes
+	local shuffledDecoys = shuffle(decoyCandidates)
+	return {
+		correctMeme,
+		shuffledDecoys[1],
+		shuffledDecoys[2],
+	}
 end
 
 -- Refreshes generated meme panels/sounds from ReplicatedStorage.NewGenMemes before randomizing.
@@ -731,9 +730,9 @@ local function setStageAttributes(stage, correctMeme, correctPanelInfo)
 	end
 end
 
--- Picks three memes for a stage, shuffles their panel positions, and records the answer.
-local function configureStage(stage, memeDrawBag)
-	local stageMemes = drawStageMemes(memeDrawBag)
+-- Picks a correct meme and two decoys, shuffles their panel positions, and records the answer.
+local function configureStage(stage, memePool, correctAnswerDrawBag)
+	local stageMemes = drawStageMemes(memePool, correctAnswerDrawBag)
 	local correctMeme = stageMemes[1]
 	local shuffledPanels = shuffle(stage.panels)
 	local correctPanelInfo = nil
@@ -759,10 +758,10 @@ syncMemePoolFromCatalog()
 
 local memePool = getMemePool()
 local stages = getStages()
-local memeDrawBag = createMemeDrawBag(memePool)
+local correctAnswerDrawBag = createCorrectAnswerDrawBag(memePool)
 
 for _, stage in ipairs(stages) do
-	configureStage(stage, memeDrawBag)
+	configureStage(stage, memePool, correctAnswerDrawBag)
 end
 
 configureStageSpawns(stages)
